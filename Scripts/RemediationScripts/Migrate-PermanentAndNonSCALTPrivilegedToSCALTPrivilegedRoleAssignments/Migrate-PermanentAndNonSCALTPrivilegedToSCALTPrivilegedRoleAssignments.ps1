@@ -51,6 +51,19 @@
         
         Get-Help Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments -Detailed
        
+
+# My notes:
+roleAssignment in scope:
+    RASI, user/grp (non-ScAlt & ScAlt), subowner/UAadmin/contri rg owner/UAadmin
+        no linked RESI (does this means not PIM?)
+            based on 'Remove-AzRoleAssignment' during deletion, is this means RASI will return the one created by 'Role Assignement'？
+        upn != "MS-PIM" (what is this?, seems to be used by PIM to discover resources?)
+    RESI, non-ScAlt user, sub owner/UAadmin/contri rg owner/contri
+
+- need manually migrate the sub owner/UAadmin used by current user.
+- RASI grp => RESI grp
+- RASI usr => RESI ScAlt usr
+- RESI non-ScAlt usr => RESI ScAlt usr
 ###>
 
 function Setup-Prerequisites
@@ -301,8 +314,9 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
     
     $currentUserId = (Get-AzAdUser -ObjectId $context.Account.Id).Id
     #List of role assignment details 
-    $roleAssignmentDetails = @()
+    $roleAssignmentDetails = @() # RASI
     $roleAssignmentsDetails = @()
+    # pimEligibleRoleAssignments # RESI
 
     Write-Host "Checking if subscription [$($SubscriptionId)] contains ServiceAdministrator role assignment(s)..."
 
@@ -379,10 +393,12 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
                 {  
                     if($_.PrincipalId -eq $currentUserId -and ($_.RoleDefinitionDisplayName -eq "User Access Adminstrator" -or $_.RoleDefinitionDisplayName -eq "Owner")  -and $_.ScopeType -eq "Subscription")
                     {
+                        # sub owner/UAadmin of user running script, i.e. the roleAssignment being used for this script
                         $currentUserRoleAssignment += $_                
                     }  
                     else
                     {
+                        # all other roles of 'criticalPermanentRoleAssignments'
                         $roleAssignmentDetails += $_
                     }
                 }
@@ -430,6 +446,8 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
         Write-Host "Checking for critical permanent and non SC-ALT PIM role assignment(s)..." 
 
         #List for storing critical pim role assignment.
+        # CriticalPIMNonSCALTRoleAssignments
+        # RESI, non-ScAlt user, sub owner/admin/contri rg owner/contri
         $criticalPIMRoleAssignments = @()
 
         #List for critical role assignment(s).
@@ -560,6 +578,7 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
                     
                     if(($PIMAssignment|Measure-Object).Count -ne 0)
                     {
+                        # No ScopeType, but add ScAltEmail
                         $PIMCreated += $_ |Select-Object @{N='PrincipalDisplayName';E={$_.PrincipalDisplayName}},
                                                                               @{N='Scope';E={$_.Scope}},
                                                                               @{N='Name';E={$_.Name}},
@@ -665,7 +684,8 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
                 }
             }
             else
-            {
+            {   # Q: no remove because it is RESI => RESI, does this override, so no remove?
+                # A: no, they are in 'ToBeDeletedPIMRoleAssignments.csv', need manually delete
                 $pimWithNonSCALTAccount  += $_
             }     
         }
@@ -779,6 +799,7 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
     }
     else
     {
+        # #(RESI+RASI)
         $totalRoleAssignments = ($roleAssignmentDetails| Measure-Object).Count + ($pimEligibleRoleAssignments|Measure-Object).Count
 
         if ($totalRoleAssignments -eq 0)
@@ -790,18 +811,24 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
         Write-Host "Found $($totalRoleAssignments) role assignment(s)." -ForegroundColor $([Constants]::MessageType.Update)
 
         #List for storing critical pim role assignment.
+        # RESI, user, sub owner/UAadmin/contri rg owner/UAadmin
         $criticalPIMRoleAssignments = @()
 
         #List for critical role assignment(s).
         $criticalRoleAssignments = @()
 
         # List for storing critical permanent role assignment.
+        # RASI, user/grp (non-ScAlt inc.), subowner/UAadmin/contri rg owner/UAadmin
+        #   no linked RESI (does this means not PIM?)
+        #   upn != "MS-PIM" (what is this?, seems to be used by PIM to discover resources?)
         $criticalPermanentRoleAssignments = @()
 
         # List for storing critical Non SC-ALT Account 
+        # RESI, non-ScAlt user, sub owner/admin/contri rg owner/contri
         $CriticalPIMNonSCALTRoleAssignments = @()
 
         # List for storing critical Permanent and PIM role assignment
+        # criticalPermanentRoleAssignments + CriticalPIMNonSCALTRoleAssignments
         $criticalPIMAndPermanentRoleAssignments = @()
 
         Write-Host "Checking for critical permanent and PIM non SC-ALT role assignment(s)..."
@@ -820,7 +847,7 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
         $scALTDetails = $scaltAccount.GetSCALTRoleAssignments($ids)
         
         # Dictionary for storing SC-ALT Account related details.
-        $scALTMapping = @{}
+        $scALTMapping = @{} # oid => (isScAlt, if true then upn)
 
         # Checking if the user is SC-ALT or not.
         $scALTDetails.value | ForEach-Object { 
@@ -924,6 +951,7 @@ function Migrate-PermanentAndNonSCALTPrivilegedToSCALTPrivilegedRoleAssignments
         # Printing the critical role assignments
         $criticalPIMAndPermanentRoleAssignments | Format-Table -Property $colsProperty -Wrap
 
+        # criticalPIMAndPermanentRoleAssignments where user & non-ScAlt
         $nonScAltRoleAssignment = $criticalPIMAndPermanentRoleAssignments| Where-Object { $_.ExpandedPropertiesPrincipalType -eq "User" -and $_.IsScAltAccount -eq $false}
  
         $nonScAltRoleAssignment = $nonScAltRoleAssignment | Sort-Object -Property PrincipalEmail | Select-Object PrincipalEmail , ScAltEmail | Get-Unique -AsString
